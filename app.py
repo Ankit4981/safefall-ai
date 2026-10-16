@@ -580,7 +580,10 @@ def get_landmarker():
     from mediapipe.tasks.python import vision
 
     options = vision.PoseLandmarkerOptions(
-        base_options=mp_python.BaseOptions(model_asset_path=POSE_MODEL_PATH),
+        base_options=mp_python.BaseOptions(
+            model_asset_path=POSE_MODEL_PATH,
+            delegate=mp_python.BaseOptions.Delegate.CPU,
+        ),
         running_mode=vision.RunningMode.IMAGE,
         num_poses=1,
         min_pose_detection_confidence=0.3,
@@ -916,6 +919,7 @@ elif curr_view == "Video Analysis":
 
                 prog_bar = st.progress(0.0, text="Initializing MediaPipe Pose Engine...")
                 t_start = time.perf_counter()
+                inf_err = None
                 try:
                     items, fps = core.process_video(
                         tmp_path,
@@ -926,6 +930,7 @@ elif curr_view == "Video Analysis":
                         progress_cb=lambda f: prog_bar.progress(f, text=f"Evaluating temporal postures ({int(f * 100)}%)...")
                     )
                 except Exception as e:
+                    inf_err = str(e)
                     st.error(f"Inference error encountered: {e}")
                     items, fps = [], 25.0
                 finally:
@@ -938,7 +943,9 @@ elif curr_view == "Video Analysis":
                             pass
                 t_elapsed = time.perf_counter() - t_start
 
-                if not items:
+                if inf_err:
+                    pass  # Already reported above with clear error description
+                elif not items:
                     st.error("No valid frames could be decoded from this video stream. Please verify video format and codec.")
                 else:
                     latency_per_sample = (t_elapsed / max(len(items), 1)) * 1000
@@ -1155,48 +1162,56 @@ elif curr_view == "Image Analysis":
 
                 if run_img_btn:
                     t_start = time.perf_counter()
+                    inf_err = None
                     with st.spinner("Extracting 33 keypoints & running MLP forward pass..."):
                         try:
                             res = core.analyse_frame(bgr, get_landmarker(), get_weights())
                         except Exception as e:
+                            inf_err = str(e)
                             st.error(f"Inference error encountered: {e}")
                             res = None
                     t_elapsed = (time.perf_counter() - t_start) * 1000
                     st.session_state["last_latency_ms"] = t_elapsed
-                    st.session_state["img_cache"] = (img_key, res, t_elapsed)
+                    st.session_state["img_cache"] = (img_key, res, t_elapsed, inf_err)
 
-                    is_fall = core.is_fall_result(res, st.session_state["fall_thresh"]) if res else False
-                    peak_fall_prob = res["fall_prob"] if res else 0.0
-                    conf = res["conf"] if res else 0.0
-                    torso_angle = res.get("torso_angle", 0.0) if res else 0.0
-                    aspect_ratio = res.get("aspect_ratio", 0.0) if res else 0.0
+                    if inf_err is None:
+                        is_fall = core.is_fall_result(res, st.session_state["fall_thresh"]) if res else False
+                        peak_fall_prob = res["fall_prob"] if res else 0.0
+                        conf = res["conf"] if res else 0.0
+                        torso_angle = res.get("torso_angle", 0.0) if res else 0.0
+                        aspect_ratio = res.get("aspect_ratio", 0.0) if res else 0.0
 
-                    if is_fall:
-                        details_text = f"🚨 Posture: {core.DISPLAY[res['label']]} (Tilt: {torso_angle:.1f}°, Aspect: {aspect_ratio:.2f})"
-                    elif res:
-                        details_text = f"🛡️ Posture: {core.DISPLAY[res['label']]} (Tilt: {torso_angle:.1f}°)"
-                    else:
-                        details_text = "No human skeletal landmarks detected"
+                        if is_fall:
+                            details_text = f"🚨 Posture: {core.DISPLAY[res['label']]} (Tilt: {torso_angle:.1f}°, Aspect: {aspect_ratio:.2f})"
+                        elif res:
+                            details_text = f"🛡️ Posture: {core.DISPLAY[res['label']]} (Tilt: {torso_angle:.1f}°)"
+                        else:
+                            details_text = "No human skeletal landmarks detected"
 
-                    st.session_state["history"].append({
-                        "id": f"IMG-{int(time.time()) % 10000:04d}",
-                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "mode": "Single Image",
-                        "filename": up_img.name,
-                        "status": "Fall Incident" if is_fall else ("Normal Posture" if res else "No Person"),
-                        "is_fall": is_fall,
-                        "peak_fall_prob": peak_fall_prob,
-                        "avg_conf": conf,
-                        "confidence": peak_fall_prob if is_fall else conf,
-                        "alert_time": None,
-                        "latency_ms": t_elapsed,
-                        "details": details_text
-                    })
+                        st.session_state["history"].append({
+                            "id": f"IMG-{int(time.time()) % 10000:04d}",
+                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "mode": "Single Image",
+                            "filename": up_img.name,
+                            "status": "Fall Incident" if is_fall else ("Normal Posture" if res else "No Person"),
+                            "is_fall": is_fall,
+                            "peak_fall_prob": peak_fall_prob,
+                            "avg_conf": conf,
+                            "confidence": peak_fall_prob if is_fall else conf,
+                            "alert_time": None,
+                            "latency_ms": t_elapsed,
+                            "details": details_text
+                        })
 
                 cached_img = st.session_state.get("img_cache")
                 if cached_img and cached_img[0] == img_key:
-                    _, res, t_elapsed = cached_img
-                    if res is None:
+                    _entry = cached_img
+                    res = _entry[1]
+                    inf_err = _entry[3] if len(_entry) >= 4 else None
+
+                    if inf_err:
+                        st.image(to_rgb(bgr), caption="Uploaded Raw Frame (Inference Failed)", use_container_width=True)
+                    elif res is None:
                         st.warning("No human pose detected. Ensure subject is clearly visible in the frame.")
                         st.image(to_rgb(bgr), use_container_width=True)
                     else:
@@ -1232,8 +1247,22 @@ elif curr_view == "Image Analysis":
             </div>
             """, unsafe_allow_html=True)
         else:
-            _, res, t_elapsed = cached_img
-            if res is not None:
+            _entry = cached_img
+            res = _entry[1]
+            t_elapsed = _entry[2]
+            inf_err = _entry[3] if len(_entry) >= 4 else None
+
+            if inf_err:
+                st.markdown(f"""
+                <div class="sf-status-alert alarm">
+                  <div style="color:#EF4444;">{lucide("alert-triangle", size=22, color="#EF4444")}</div>
+                  <div>
+                    <div class="sf-status-alert-heading">AI VISION ENGINE RUNTIME FAILURE</div>
+                    <div class="sf-status-alert-sub">{inf_err}</div>
+                  </div>
+                </div>
+                """, unsafe_allow_html=True)
+            elif res is not None:
                 is_fall = core.is_fall_result(res, st.session_state["fall_thresh"])
                 st.markdown(circular_gauge_svg(res["fall_prob"], is_fall), unsafe_allow_html=True)
 
