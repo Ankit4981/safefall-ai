@@ -55,6 +55,8 @@ def forward(feat, W):
 
 
 def prepare_frame(bgr):
+    if bgr is None or bgr.size == 0:
+        return None
     if FRAME_SIZE is not None:
         return cv2.resize(bgr, FRAME_SIZE)
     h, w = bgr.shape[:2]
@@ -69,22 +71,29 @@ def analyse_frame(bgr, landmarker, W):
     """Return a dict with the prediction, or None if no person was found."""
     import mediapipe as mp
 
-    bgr = prepare_frame(bgr)
-    rgb = np.ascontiguousarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
-    res = landmarker.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
-    if not res.pose_landmarks:
+    if bgr is None or bgr.size == 0:
         return None
-    lm = res.pose_landmarks[0]
-    xs = np.array([p.x for p in lm], dtype=float)
-    ys = np.array([p.y for p in lm], dtype=float)
-    feat = make_features(xs, ys)
-    probs = forward(feat, W)
-    k = int(np.argmax(probs))
-    torso_angle = float(feat[-2])
-    aspect_ratio = float(feat[-1])
-    return {"label": CLASS_NAMES[k], "conf": float(probs[k]), "probs": probs,
-            "fall_prob": float(probs[0]), "xs": xs, "ys": ys, "bgr": bgr,
-            "torso_angle": torso_angle, "aspect_ratio": aspect_ratio}
+    try:
+        bgr = prepare_frame(bgr)
+        if bgr is None or bgr.size == 0:
+            return None
+        rgb = np.ascontiguousarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+        res = landmarker.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
+        if not res or not res.pose_landmarks:
+            return None
+        lm = res.pose_landmarks[0]
+        xs = np.array([p.x for p in lm], dtype=float)
+        ys = np.array([p.y for p in lm], dtype=float)
+        feat = make_features(xs, ys)
+        probs = forward(feat, W)
+        k = int(np.argmax(probs))
+        torso_angle = float(feat[-2])
+        aspect_ratio = float(feat[-1])
+        return {"label": CLASS_NAMES[k], "conf": float(probs[k]), "probs": probs,
+                "fall_prob": float(probs[0]), "xs": xs, "ys": ys, "bgr": bgr,
+                "torso_angle": torso_angle, "aspect_ratio": aspect_ratio}
+    except Exception:
+        return None
 
 
 def draw_skeleton(bgr, xs, ys, is_fall=False):
@@ -126,23 +135,30 @@ def find_alert(items, thr, n_consecutive):
 
 def process_video(path, landmarker, W, step=10, max_frames=120, progress_cb=None):
     cap = cv2.VideoCapture(path)
+    if not cap.isOpened():
+        return [], 25.0
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    if fps <= 0 or np.isnan(fps):
+        fps = 25.0
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-    expected = max_frames if total <= 0 else min(max_frames, -(-total // step))
+    effective_step = max(int(step), 1)
+    expected = max_frames if total <= 0 else min(max_frames, -(-total // effective_step))
     items, idx = [], 0
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
-        if idx % step == 0:
-            items.append({"frame": idx, "time": idx / fps,
-                          "result": analyse_frame(frame, landmarker, W)})
-            if progress_cb:
-                progress_cb(min(len(items) / max(expected, 1), 1.0))
-            if len(items) >= max_frames:
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok or frame is None:
                 break
-        idx += 1
-    cap.release()
+            if idx % effective_step == 0:
+                res = analyse_frame(frame, landmarker, W)
+                items.append({"frame": idx, "time": idx / fps, "result": res})
+                if progress_cb:
+                    progress_cb(min(len(items) / max(expected, 1), 1.0))
+                if len(items) >= max_frames:
+                    break
+            idx += 1
+    finally:
+        cap.release()
     return items, fps
 
 

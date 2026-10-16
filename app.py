@@ -28,24 +28,24 @@ st.set_page_config(
 )
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-WEIGHTS_PATH = os.path.join(HERE, "fall_model_weights.npz")
-POSE_MODEL_PATH = os.path.join(HERE, "pose_landmarker_full.task")
+WEIGHTS_PATH = os.path.normpath(os.path.join(HERE, "fall_model_weights.npz"))
+POSE_MODEL_PATH = os.path.normpath(os.path.join(HERE, "pose_landmarker_full.task"))
+
+
+def set_nav_view(v):
+    st.session_state["nav_view"] = v
+
+
+def reset_detection_settings():
+    st.session_state["fall_thresh"] = 0.50
+    st.session_state["n_consec_frames"] = 2
+    st.session_state["sampling_interval"] = 10
+    st.session_state["max_vid_frames"] = 120
+
 
 # ------------------------------------------------------------------ SESSION STATE INIT
 if "history" not in st.session_state:
     st.session_state["history"] = []
-
-# Retroactive schema normalization for existing records in memory
-for _rec in st.session_state.get("history", []):
-    if "peak_fall_prob" not in _rec:
-        if _rec.get("is_fall"):
-            _rec["peak_fall_prob"] = max(_rec.get("confidence", 0.0), st.session_state.get("fall_thresh", 0.50) + 0.18)
-        else:
-            _rec["peak_fall_prob"] = min(_rec.get("confidence", 0.0), 0.18)
-    if "avg_conf" not in _rec:
-        _rec["avg_conf"] = _rec.get("confidence", 0.0)
-    if "details" not in _rec or not _rec["details"]:
-        _rec["details"] = "Temporal stream analysis completed"
 
 if "fall_thresh" not in st.session_state:
     st.session_state["fall_thresh"] = 0.50
@@ -67,6 +67,21 @@ if "telecare_active" not in st.session_state:
 
 if "nav_view" not in st.session_state:
     st.session_state["nav_view"] = "Video Analysis"
+
+# Retroactive schema normalization for existing records in memory
+for _rec in st.session_state.get("history", []):
+    _conf = _rec.get("confidence")
+    if _conf is None:
+        _conf = 0.0
+    if "peak_fall_prob" not in _rec or _rec.get("peak_fall_prob") is None:
+        if _rec.get("is_fall"):
+            _rec["peak_fall_prob"] = max(float(_conf), float(st.session_state["fall_thresh"]) + 0.18)
+        else:
+            _rec["peak_fall_prob"] = min(float(_conf), 0.18)
+    if "avg_conf" not in _rec or _rec.get("avg_conf") is None:
+        _rec["avg_conf"] = float(_conf)
+    if "details" not in _rec or not _rec["details"]:
+        _rec["details"] = "Temporal stream analysis completed"
 
 
 # ------------------------------------------------------------------ LUCIDE SVG ICONS
@@ -627,36 +642,35 @@ with st.sidebar:
     st.markdown(f'<div class="sf-sidebar-section" style="margin-top:20px;">{lucide("sliders", size=12, color="#94A3B8")} Detection Configuration</div>', unsafe_allow_html=True)
 
     # Compact sliders with numerical values
-    st.session_state["fall_thresh"] = st.slider(
-        f"Fall Confidence Threshold ({st.session_state['fall_thresh']:.2f})",
-        min_value=0.30, max_value=0.95, value=st.session_state["fall_thresh"], step=0.05,
+    st.slider(
+        "Fall Confidence Threshold",
+        min_value=0.30, max_value=0.95, step=0.05,
+        key="fall_thresh",
         help="Minimum confidence threshold required to classify a posture as a fall."
     )
 
-    st.session_state["n_consec_frames"] = st.slider(
-        f"Consecutive Fall Frames ({st.session_state['n_consec_frames']} frames)",
-        min_value=1, max_value=6, value=st.session_state["n_consec_frames"], step=1,
+    st.slider(
+        "Consecutive Fall Frames",
+        min_value=1, max_value=6, step=1,
+        key="n_consec_frames",
         help="Number of consecutive sampled video frames needed before raising an emergency alarm."
     )
 
-    st.session_state["sampling_interval"] = st.slider(
-        f"Frame Sampling Interval (Every {st.session_state['sampling_interval']}th)",
-        min_value=1, max_value=30, value=st.session_state["sampling_interval"], step=1,
+    st.slider(
+        "Frame Sampling Interval",
+        min_value=1, max_value=30, step=1,
+        key="sampling_interval",
         help="Sampling rate: processes every Nth video frame to balance speed vs temporal resolution."
     )
 
-    st.session_state["max_vid_frames"] = st.slider(
-        f"Max Frames per Video ({st.session_state['max_vid_frames']})",
-        min_value=30, max_value=300, value=st.session_state["max_vid_frames"], step=10,
+    st.slider(
+        "Max Frames per Video",
+        min_value=30, max_value=300, step=10,
+        key="max_vid_frames",
         help="Safety cap on total sampled frames per uploaded video file."
     )
 
-    if st.button("Reset Settings to Default", use_container_width=True):
-        st.session_state["fall_thresh"] = 0.50
-        st.session_state["n_consec_frames"] = 2
-        st.session_state["sampling_interval"] = 10
-        st.session_state["max_vid_frames"] = 120
-        st.rerun()
+    st.button("Reset Settings to Default", key="btn_reset_settings", on_click=reset_detection_settings, use_container_width=True)
 
     # Footer Privacy Card
     st.markdown(f"""
@@ -806,9 +820,7 @@ if curr_view == "Overview":
           </div>
         </div>
         """, unsafe_allow_html=True)
-        if st.button("Open Video Analysis Workspace", key="quick_vid", use_container_width=True):
-            st.session_state["nav_view"] = "Video Analysis"
-            st.rerun()
+        st.button("Open Video Analysis Workspace", key="quick_vid", on_click=set_nav_view, args=("Video Analysis",), use_container_width=True)
 
     with col_quick2:
         st.markdown(f"""
@@ -819,9 +831,7 @@ if curr_view == "Overview":
           </div>
         </div>
         """, unsafe_allow_html=True)
-        if st.button("Open Image Analysis Workspace", key="quick_img", use_container_width=True):
-            st.session_state["nav_view"] = "Image Analysis"
-            st.rerun()
+        st.button("Open Image Analysis Workspace", key="quick_img", on_click=set_nav_view, args=("Image Analysis",), use_container_width=True)
 
     if st.session_state["history"]:
         st.markdown(f"""
@@ -857,9 +867,7 @@ if curr_view == "Overview":
 
         st.html(f'<div class="sf-panel-card" style="padding:12px 14px;">{"".join(recent_rows)}</div>')
 
-        if st.button("View Complete Detection Audit Log →", key="btn_view_full_audit", use_container_width=True):
-            st.session_state["nav_view"] = "Detection History"
-            st.rerun()
+        st.button("View Complete Detection Audit Log →", key="btn_view_full_audit", on_click=set_nav_view, args=("Detection History",), use_container_width=True)
 
 
 # ------------------------------------------------------------------ VIDEO ANALYSIS (2-COLUMN WORKSPACE)
@@ -881,7 +889,7 @@ elif curr_view == "Video Analysis":
             key="vid_uploader_main"
         )
 
-        vkey = (upv.name, upv.size, st.session_state["fall_thresh"], st.session_state["n_consec_frames"]) if upv else None
+        vkey = (upv.name, upv.size) if upv else None
 
         if upv is not None:
             v_size_mb = len(upv.getvalue()) / (1024 * 1024)
@@ -917,45 +925,55 @@ elif curr_view == "Video Analysis":
                         max_frames=st.session_state["max_vid_frames"],
                         progress_cb=lambda f: prog_bar.progress(f, text=f"Evaluating temporal postures ({int(f * 100)}%)...")
                     )
+                except Exception as e:
+                    st.error(f"Inference error encountered: {e}")
+                    items, fps = [], 25.0
                 finally:
+                    prog_bar.empty()
                     if os.path.exists(tmp_path):
-                        os.remove(tmp_path)
+                        time.sleep(0.05)
+                        try:
+                            os.remove(tmp_path)
+                        except Exception:
+                            pass
                 t_elapsed = time.perf_counter() - t_start
-                prog_bar.empty()
 
-                latency_per_sample = (t_elapsed / max(len(items), 1)) * 1000
-                st.session_state["last_latency_ms"] = latency_per_sample
-                st.session_state["vid_cache"] = (vkey, items, fps, t_elapsed)
+                if not items:
+                    st.error("No valid frames could be decoded from this video stream. Please verify video format and codec.")
+                else:
+                    latency_per_sample = (t_elapsed / max(len(items), 1)) * 1000
+                    st.session_state["last_latency_ms"] = latency_per_sample
+                    st.session_state["vid_cache"] = (vkey, items, fps, t_elapsed)
 
-                # Record in detection history
-                s_temp = core.summarise(items, st.session_state["fall_thresh"])
-                alert_temp = core.find_alert(items, st.session_state["fall_thresh"], st.session_state["n_consec_frames"])
-                is_fall_detected = (alert_temp is not None)
-                detected_items = [it for it in items if it["result"] is not None]
-                peak_fall_prob = max([it["result"]["fall_prob"] for it in detected_items] + [0.0])
-                avg_conf = float(np.mean([it["result"]["conf"] for it in detected_items])) if detected_items else 0.0
-                alert_time = items[alert_temp]["time"] if alert_temp is not None else None
+                    # Record in detection history
+                    s_temp = core.summarise(items, st.session_state["fall_thresh"])
+                    alert_temp = core.find_alert(items, st.session_state["fall_thresh"], st.session_state["n_consec_frames"])
+                    is_fall_detected = (alert_temp is not None)
+                    detected_items = [it for it in items if it["result"] is not None]
+                    peak_fall_prob = max([it["result"]["fall_prob"] for it in detected_items] + [0.0])
+                    avg_conf = float(np.mean([it["result"]["conf"] for it in detected_items])) if detected_items else 0.0
+                    alert_time = items[alert_temp]["time"] if alert_temp is not None else None
 
-                details_text = (
-                    f"🚨 Incident triggered @ {alert_time:.2f}s • {s_temp['falls']} fall frames"
-                    if is_fall_detected
-                    else f"🛡️ Subject safe • {s_temp['analysed']} frames evaluated (0 falls)"
-                )
-                
-                st.session_state["history"].append({
-                    "id": f"VID-{int(time.time()) % 10000:04d}",
-                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "mode": "Video Stream",
-                    "filename": upv.name,
-                    "status": "Fall Incident" if is_fall_detected else "Normal Activity",
-                    "is_fall": is_fall_detected,
-                    "peak_fall_prob": peak_fall_prob,
-                    "avg_conf": avg_conf,
-                    "confidence": peak_fall_prob if is_fall_detected else avg_conf,
-                    "alert_time": alert_time,
-                    "latency_ms": latency_per_sample,
-                    "details": details_text
-                })
+                    details_text = (
+                        f"🚨 Incident triggered @ {alert_time:.2f}s • {s_temp['falls']} fall frames"
+                        if is_fall_detected
+                        else f"🛡️ Subject safe • {s_temp['analysed']} frames evaluated (0 falls)"
+                    )
+                    
+                    st.session_state["history"].append({
+                        "id": f"VID-{int(time.time()) % 10000:04d}",
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "mode": "Video Stream",
+                        "filename": upv.name,
+                        "status": "Fall Incident" if is_fall_detected else "Normal Activity",
+                        "is_fall": is_fall_detected,
+                        "peak_fall_prob": peak_fall_prob,
+                        "avg_conf": avg_conf,
+                        "confidence": peak_fall_prob if is_fall_detected else avg_conf,
+                        "alert_time": alert_time,
+                        "latency_ms": latency_per_sample,
+                        "details": details_text
+                    })
 
             cached_vid = st.session_state.get("vid_cache")
             if cached_vid and cached_vid[0] == vkey:
@@ -1124,7 +1142,7 @@ elif curr_view == "Image Analysis":
             key="img_uploader_2col"
         )
 
-        img_key = (up_img.name, up_img.size, st.session_state["fall_thresh"]) if up_img else None
+        img_key = (up_img.name, up_img.size) if up_img else None
 
         if up_img is not None:
             data = np.frombuffer(up_img.getvalue(), np.uint8)
@@ -1138,7 +1156,11 @@ elif curr_view == "Image Analysis":
                 if run_img_btn:
                     t_start = time.perf_counter()
                     with st.spinner("Extracting 33 keypoints & running MLP forward pass..."):
-                        res = core.analyse_frame(bgr, get_landmarker(), get_weights())
+                        try:
+                            res = core.analyse_frame(bgr, get_landmarker(), get_weights())
+                        except Exception as e:
+                            st.error(f"Inference error encountered: {e}")
+                            res = None
                     t_elapsed = (time.perf_counter() - t_start) * 1000
                     st.session_state["last_latency_ms"] = t_elapsed
                     st.session_state["img_cache"] = (img_key, res, t_elapsed)
@@ -1278,6 +1300,16 @@ elif curr_view == "Image Analysis":
                         f'</div>'
                     )
                 st.html(f'<div class="sf-panel-card" style="padding:10px 14px;">{"".join(bar_rows)}</div>')
+            else:
+                st.markdown(f"""
+                <div class="sf-status-alert alarm" style="border-color:#F59E0B; background:rgba(245,158,11,0.08);">
+                  <div style="color:#F59E0B;">{lucide("alert-circle", size=22, color="#F59E0B")}</div>
+                  <div>
+                    <div class="sf-status-alert-heading" style="color:#F59E0B;">NO HUMAN POSE DETECTED</div>
+                    <div class="sf-status-alert-sub" style="color:#CBD5E1;">The vision model could not identify 33 skeletal landmarks. Ensure the subject is clearly visible in the frame.</div>
+                  </div>
+                </div>
+                """, unsafe_allow_html=True)
 
 
 # ------------------------------------------------------------------ DETECTION HISTORY
